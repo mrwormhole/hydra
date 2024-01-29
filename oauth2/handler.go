@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"html/template"
 	"net/http"
+	"os"
 	"reflect"
 	"strings"
 	"time"
@@ -949,33 +950,38 @@ type oAuth2TokenExchange struct {
 func (h *Handler) oauth2TokenExchange(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	session := NewSessionWithCustomClaims(ctx, h.c, "")
+	provider := h.r.OAuth2Provider()
+	var usesJWTAccessToken bool
 
-	accessRequest, err := h.r.OAuth2Provider().NewAccessRequest(ctx, r, session)
+	accessRequest, err := provider.NewAccessRequest(ctx, r, session)
 	if err != nil {
 		h.logOrAudit(err, r)
-		h.r.OAuth2Provider().WriteAccessError(ctx, w, accessRequest, err)
+		provider.WriteAccessError(ctx, w, accessRequest, err)
 		events.Trace(ctx, events.TokenExchangeError)
 		return
 	}
+	cl := accessRequest.GetClient()
+	grantTypes := accessRequest.GetGrantTypes()
+	jwtSigner := h.r.AccessTokenJWTStrategy()
 
-	if accessRequest.GetGrantTypes().ExactOne(string(fosite.GrantTypeClientCredentials)) ||
-		accessRequest.GetGrantTypes().ExactOne(string(fosite.GrantTypeJWTBearer)) {
+	if grantTypes.ExactOne(string(fosite.GrantTypeClientCredentials)) || grantTypes.ExactOne(string(fosite.GrantTypeJWTBearer)) {
 		var accessTokenKeyID string
-		if h.c.AccessTokenStrategy(ctx, client.AccessTokenStrategySource(accessRequest.GetClient())) == "jwt" {
-			accessTokenKeyID, err = h.r.AccessTokenJWTStrategy().GetPublicKeyID(ctx)
+		usesJWTAccessToken = h.c.AccessTokenStrategy(ctx, client.AccessTokenStrategySource(cl)) == "jwt"
+		if usesJWTAccessToken {
+			accessTokenKeyID, err = jwtSigner.GetPublicKeyID(ctx)
 			if err != nil {
 				x.LogError(r, err, h.r.Logger())
-				h.r.OAuth2Provider().WriteAccessError(ctx, w, accessRequest, err)
+				provider.WriteAccessError(ctx, w, accessRequest, err)
 				events.Trace(ctx, events.TokenExchangeError, events.WithRequest(accessRequest))
 				return
 			}
 		}
 
 		// only for client_credentials, otherwise Authentication is included in session
-		if accessRequest.GetGrantTypes().ExactOne("client_credentials") {
-			session.Subject = accessRequest.GetClient().GetID()
+		if grantTypes.ExactOne(string(fosite.GrantTypeClientCredentials)) {
+			session.Subject = cl.GetID()
 		}
-		session.ClientID = accessRequest.GetClient().GetID()
+		session.ClientID = cl.GetID()
 		session.KID = accessTokenKeyID
 		session.DefaultSession.Claims.Issuer = h.c.IssuerURL(r.Context()).String()
 		session.DefaultSession.Claims.IssuedAt = time.Now().UTC()
@@ -984,19 +990,19 @@ func (h *Handler) oauth2TokenExchange(w http.ResponseWriter, r *http.Request) {
 
 		// Added for compatibility with MITREid
 		if h.c.GrantAllClientCredentialsScopesPerDefault(r.Context()) && len(scopes) == 0 {
-			for _, scope := range accessRequest.GetClient().GetScopes() {
+			for _, scope := range cl.GetScopes() {
 				accessRequest.GrantScope(scope)
 			}
 		}
 
 		for _, scope := range scopes {
-			if h.r.Config().GetScopeStrategy(ctx)(accessRequest.GetClient().GetScopes(), scope) {
+			if h.r.Config().GetScopeStrategy(ctx)(cl.GetScopes(), scope) {
 				accessRequest.GrantScope(scope)
 			}
 		}
 
 		for _, audience := range accessRequest.GetRequestedAudience() {
-			if h.r.AudienceStrategy()(accessRequest.GetClient().GetAudience(), []string{audience}) == nil {
+			if h.r.AudienceStrategy()(cl.GetAudience(), []string{audience}) == nil {
 				accessRequest.GrantAudience(audience)
 			}
 		}
@@ -1005,21 +1011,61 @@ func (h *Handler) oauth2TokenExchange(w http.ResponseWriter, r *http.Request) {
 	for _, hook := range h.r.AccessRequestHooks() {
 		if err := hook(ctx, accessRequest); err != nil {
 			h.logOrAudit(err, r)
-			h.r.OAuth2Provider().WriteAccessError(ctx, w, accessRequest, err)
+			provider.WriteAccessError(ctx, w, accessRequest, err)
 			events.Trace(ctx, events.TokenExchangeError, events.WithRequest(accessRequest))
 			return
 		}
 	}
 
-	accessResponse, err := h.r.OAuth2Provider().NewAccessResponse(ctx, accessRequest)
+	accessResponse, err := provider.NewAccessResponse(ctx, accessRequest)
 	if err != nil {
 		h.logOrAudit(err, r)
-		h.r.OAuth2Provider().WriteAccessError(ctx, w, accessRequest, err)
+		provider.WriteAccessError(ctx, w, accessRequest, err)
 		events.Trace(ctx, events.TokenExchangeError, events.WithRequest(accessRequest))
 		return
 	}
 
-	h.r.OAuth2Provider().WriteAccessResponse(ctx, w, accessRequest, accessResponse)
+	_, ok := os.LookupEnv("JWT_MUST_HAVE_CLIENT_METADATA") // feature flag for client metadata injection into JWT
+	if !ok || !usesJWTAccessToken {
+		provider.WriteAccessResponse(ctx, w, accessRequest, accessResponse)
+		return
+	}
+
+	persistedClient, err := h.r.ClientManager().GetConcreteClient(ctx, cl.GetID())
+	if err != nil {
+		h.logOrAudit(err, r)
+		provider.WriteAccessError(ctx, w, accessRequest, err)
+		events.Trace(ctx, events.TokenExchangeError, events.WithRequest(accessRequest))
+		return
+	}
+	md := make(map[string]interface{})
+	if err := json.Unmarshal(persistedClient.Metadata, &md); err != nil {
+		h.logOrAudit(err, r)
+		provider.WriteAccessError(ctx, w, accessRequest, err)
+		events.Trace(ctx, events.TokenExchangeError, events.WithRequest(accessRequest))
+		return
+	}
+	tk, err := jwtSigner.Decode(ctx, accessResponse.GetAccessToken())
+	if err != nil {
+		h.logOrAudit(err, r)
+		provider.WriteAccessError(ctx, w, accessRequest, err)
+		events.Trace(ctx, events.TokenExchangeError, events.WithRequest(accessRequest))
+		return
+	}
+	for k, v := range md {
+		if s, ok := v.(string); ok {
+			tk.Claims[k] = s
+		}
+	}
+	rawToken, _, err := jwtSigner.Generate(ctx, tk.Claims, &jwt.Headers{Extra: tk.Header})
+	if err != nil {
+		h.logOrAudit(err, r)
+		provider.WriteAccessError(ctx, w, accessRequest, err)
+		events.Trace(ctx, events.TokenExchangeError, events.WithRequest(accessRequest))
+		return
+	}
+	accessResponse.SetAccessToken(rawToken)
+	provider.WriteAccessResponse(ctx, w, accessRequest, accessResponse)
 }
 
 // swagger:route GET /oauth2/auth oAuth2 oAuth2Authorize

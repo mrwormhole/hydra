@@ -1,19 +1,4 @@
-<h1 align="center"><img src="https://raw.githubusercontent.com/ory/meta/master/static/banners/hydra.svg" alt="Ory Hydra - Open Source OAuth 2 and OpenID Connect server"></h1>
-
-<h4 align="center">
-    <a href="https://www.ory.sh/chat">Chat</a> |
-    <a href="https://github.com/ory/hydra/discussions">Discussions</a> |
-    <a href="http://eepurl.com/di390P">Newsletter</a><br/><br/>
-    <a href="https://www.ory.sh/hydra/docs/index">Guide</a> |
-    <a href="https://www.ory.sh/hydra/docs/reference/api">API Docs</a> |
-    <a href="https://godoc.org/github.com/ory/hydra">Code Docs</a><br/><br/>
-    <a href="https://opencollective.com/ory">Support this project!</a><br/><br/>
-    <a href="https://www.ory.sh/jobs/">Work in Open Source, Ory is hiring!</a>
-</h4>
-
----
-
-<p align="left">
+<p>
     <a href="https://github.com/ory/hydra/actions/workflows/ci.yaml"><img src="https://github.com/ory/hydra/actions/workflows/ci.yaml/badge.svg?branch=master&event=push" alt="CI Tasks for Ory Hydra"></a>
     <a href="https://codecov.io/gh/ory/hydra"><img src="https://codecov.io/gh/ory/hydra/branch/master/graph/badge.svg?token=y4fVk2Of8a"/></a>
     <a href="https://goreportcard.com/report/github.com/ory/hydra"><img src="https://goreportcard.com/badge/github.com/ory/hydra" alt="Go Report Card"></a>
@@ -22,6 +7,15 @@
     <a href="#backers" alt="sponsors on Open Collective"><img src="https://opencollective.com/ory/backers/badge.svg" /></a> <a href="#sponsors" alt="Sponsors on Open Collective"><img src="https://opencollective.com/ory/sponsors/badge.svg" /></a>
     <a href="https://github.com/ory/hydra/blob/master/CODE_OF_CONDUCT.md" alt="Ory Code of Conduct"><img src="https://img.shields.io/badge/ory-code%20of%20conduct-green" /></a>
 </p>
+
+## Important Note
+
+**Note: This fork is created in order to achieve [client metadata injection](https://github.com/ory/hydra/issues/1383) into JWT access tokens for client credentials(M2M) grant type,
+enabling this feature requires to set `JWT_MUST_HAVE_CLIENT_METADATA=1` and `STRATEGIES_ACCESS_TOKEN=jwt`, further more [this](https://github.com/mrwormhole/hydra/blob/afbf54bf40a6825955800dc4a656edfd9c4fc497/oauth2/handler.go#L1056-L1059) fork only handles metadata which have string values**
+
+There is no promise of maintenance or guarantee of upstream patches for this fork. This was simply done for personal reasons.
+
+## Ory Hydra
 
 Ory Hydra is a hardened, **OpenID Certified OAuth 2.0 Server and OpenID Connect
 Provider** optimized for low-latency, high throughput, and low resource
@@ -609,7 +603,7 @@ that your company deserves a spot here, reach out to
                 </picture>
             </td>
             <td><a href="https://pinniped.dev/">pinniped.dev</a></td>
-        </tr>         
+        </tr>
         <tr>
             <td>Adopter *</td>
             <td>Pvotal</td>
